@@ -1,35 +1,81 @@
-# Prerequisites
-*.d
+.git/
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+.idea/
 
-# Precompiled Headers
-*.gch
-*.pch
+# Visual Studio
+.vs/
+*.vcxproj*
+VS_Solution/*
+!VS_Solution/generate_vs_solution.bat
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
+# Ninja
+ClangNinja/*
 
-# Fortran module files
-*.mod
-*.smod
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
 
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
+# CLion
+# Not ignoring CLion files as I want the project targets & settings, inspections etc to be able to be shared
+_ReSharper.Caches/
+cmake-build-debug/
+cmake-build-release/
+CMakeFiles/
 
-# Executables
-*.exe
-*.out
-*.app
-
-BuildFiles/
+# Binaries & Intermediates
 Output/
+ue4ss_rewrite_maybe_main.dir/
+VS_Solution/vendor/
+VS_Solution/Dependencies/
+/VS_Solution/cppsdk/
+Releases/
+Binaries/
+Intermediates/
+
+# standard cmake build directory
+/build
+
+# Others
+*.tlog
+*.log
+*.obj
+*.idb
+*.pdb
+*.lastbuildstate
+*.recipe
+
+# ReSharper is a .NET coding add-in
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+# JetBrains Rider
+*.sln.iml
+
+# VS Code files for those working on multiple tools
+.vscode/*
+*.code-workspace
+
+# Local History for Visual Studio Code
+.history/
+
+/generated_include/build_number.hpp
+/docs-repo
+/deps/first/patternsleuth_bind/target
+
+# clangd cache
+.cache
+.xwin-cache
+
+.clangd
+compile_commands.json
+
+# xmake generated projects
+vsxmake2022
+
+# xwin
+xwin/*
