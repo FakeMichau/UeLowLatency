@@ -5,6 +5,8 @@
 #include <Unreal/Hooks/Hooks.hpp>
 #include <UEngine.hpp>
 #include <Unreal/UKismetSystemLibrary.hpp>
+#include <Unreal/UFunction.hpp>
+#include <Unreal/UClass.hpp>
 
 namespace Mod
 {
@@ -12,6 +14,7 @@ namespace Mod
 	using namespace Unreal;
 
 	typedef void(*PFN_FLTickExternal)(int64_t frameId, float DeltaSeconds, bool bIdleMode);
+	typedef void(*PFN_CameraUpdateExternal)(int64_t frameId, float cameraPosition[3], float cameraRotation[3], float fovAngle);
 	typedef int64(*PFN_GetFrameCount)();
 
 	/**
@@ -22,7 +25,7 @@ namespace Mod
 
 		// constructor
 		UeLowLatency() {
-			ModVersion = STR("0.1");
+			ModVersion = STR("0.2");
 			ModName = STR("UeLowLatency");
 			ModAuthors = STR("FakeMichau");
 			ModDescription = STR("A proxy for getting into sim thread");
@@ -49,6 +52,12 @@ namespace Mod
 		static inline UKismetSystemLibrary* kismetSystemLibrary = nullptr;
 		static inline UFunction* GetFrameCount = nullptr;
 
+		static inline UObject* playerController = nullptr;
+		static inline UObject* playerCameraManager = nullptr;
+		static inline UFunction* GetCameraRotation = nullptr;
+		static inline UFunction* GetCameraLocation = nullptr;
+		static inline UFunction* GetFOVAngle = nullptr;
+
 		auto on_unreal_init() -> void override
 		{
 			kismetSystemLibrary = UObjectGlobals::StaticFindObject<UKismetSystemLibrary*>(nullptr, nullptr, STR("/Script/Engine.Default__KismetSystemLibrary"));
@@ -59,8 +68,34 @@ namespace Mod
 				GetFrameCount = kismetSystemLibrary->GetFunctionByName(STR("GetFrameCount"));
 			}
 
+			// That's the generic class, not the active object, we only grab methods here
+			// We grab the playerController on OnClientRestart and then the active playerCameraManager in PostEngineTick
+			auto tempCameraManager = UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr, STR("/Script/Engine.PlayerCameraManager"));
+			if (tempCameraManager) {
+				Output::send<LogLevel::Verbose>(STR("tempCameraManager non null\n"));
+				GetCameraRotation = tempCameraManager->GetFunctionByName(STR("GetCameraRotation"));
+				GetCameraLocation = tempCameraManager->GetFunctionByName(STR("GetCameraLocation"));
+				GetFOVAngle = tempCameraManager->GetFunctionByName(STR("GetFOVAngle"));
+			}
+
+			UFunction* ClientRestart = UObjectGlobals::StaticFindObject<UFunction*>(nullptr, nullptr, STR("/Script/Engine.PlayerController:ClientRestart"));
+			if (ClientRestart) {
+				Output::send<LogLevel::Verbose>(STR("Found ClientRestart. Registering hook.\n"));
+				UObjectGlobals::RegisterHook(ClientRestart, OnClientRestart, nullptr, nullptr);
+			}
+			else {
+				Output::send<LogLevel::Warning>(STR("Could not find ClientRestart.\n"));
+			}
+
 			Unreal::Hook::RegisterEngineTickPreCallback(PreEngineTick, { false, false, STR("UeLowLatency"), STR("PreEngineTick") });
 			Unreal::Hook::RegisterEngineTickPostCallback(PostEngineTick, { false, false, STR("UeLowLatency"), STR("PostEngineTick") });
+		}
+
+		inline static std::mutex playerControllerMutex{};
+		static void OnClientRestart(Unreal::UnrealScriptFunctionCallableContext& Context, void* CustomData)
+		{
+			std::scoped_lock lock(Mod::UeLowLatency::playerControllerMutex);
+			playerController = Context.Context;
 		}
 
 		inline static PFN_FLTickExternal flTickStartExternal = nullptr;
@@ -76,7 +111,6 @@ namespace Mod
 			//}
 
 			int64 currentFrameId{};
-
 			if (kismetSystemLibrary && GetFrameCount) {
 				kismetSystemLibrary->ProcessEvent(GetFrameCount, &currentFrameId);
 			}
@@ -91,11 +125,54 @@ namespace Mod
 		inline static PFN_FLTickExternal flTickEndExternal = nullptr;
 		inline static std::mutex tickEndMutex{};
 
-		static void PostEngineTick(Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, UEngine* Context, float DeltaSeconds, bool bIdleMode) {
-			int64 currentFrameId{};
+		inline static PFN_CameraUpdateExternal cameraUpdateExternal = nullptr;
+		inline static std::mutex cameraUpdateMutex{};
 
+		static void PostEngineTick(Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, UEngine* Context, float DeltaSeconds, bool bIdleMode) {
+			{
+				std::scoped_lock lock(Mod::UeLowLatency::playerControllerMutex);
+				static UObject* lastPlayerController = nullptr;
+				if (lastPlayerController != playerController) {
+					lastPlayerController = playerController;
+
+					UObject** CameraManagerPtr = playerController->GetValuePtrByPropertyNameInChain<UObject*>(STR("PlayerCameraManager"));
+
+					if (CameraManagerPtr && *CameraManagerPtr) {
+						playerCameraManager = *CameraManagerPtr;
+					}
+				}
+			}
+
+			int64 currentFrameId{};
 			if (kismetSystemLibrary && GetFrameCount) {
 				kismetSystemLibrary->ProcessEvent(GetFrameCount, &currentFrameId);
+			}
+
+			FRotator currentRotation{};
+			FVector currentLocation{};
+			float cameraPosition[3];
+			float cameraRotation[3]; // Pitch, Yaw, Roll
+			if (playerCameraManager && GetCameraRotation && GetCameraLocation) {
+				playerCameraManager->ProcessEvent(GetCameraRotation, &currentRotation);
+				playerCameraManager->ProcessEvent(GetCameraLocation, &currentLocation);
+
+				// UE4 uses float, UE5 double, calling those methods should avoid this causing an issue
+				cameraPosition[0] = currentLocation.GetX();
+				cameraPosition[1] = currentLocation.GetY();
+				cameraPosition[2] = currentLocation.GetZ();
+
+				cameraRotation[0] = currentRotation.GetPitch();
+				cameraRotation[1] = currentRotation.GetYaw();
+				cameraRotation[2] = currentRotation.GetRoll();
+
+				float fovAngle = 0.0f;
+				if (GetFOVAngle) {
+					playerCameraManager->ProcessEvent(GetFOVAngle, &fovAngle);
+				}
+
+				std::scoped_lock lock(Mod::UeLowLatency::cameraUpdateMutex);
+				if (cameraUpdateExternal)
+					cameraUpdateExternal(currentFrameId, cameraPosition, cameraRotation, fovAngle);
 			}
 
 			std::scoped_lock lock(Mod::UeLowLatency::tickEndMutex);
@@ -125,9 +202,9 @@ extern "C" {
 		std::scoped_lock lock(Mod::UeLowLatency::tickEndMutex);
 		Mod::UeLowLatency::flTickEndExternal = callback;
 	}
+
+	MOD_EXPORT void setCameraUpdateCallback(Mod::PFN_CameraUpdateExternal callback) {
+		std::scoped_lock lock(Mod::UeLowLatency::cameraUpdateMutex);
+		Mod::UeLowLatency::cameraUpdateExternal = callback;
+	}
 }
-
-
-
-
-
